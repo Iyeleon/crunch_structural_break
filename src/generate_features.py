@@ -15,6 +15,7 @@ import pyarrow.parquet as pq
 from tqdm.auto import tqdm
 
 
+EPS = 1e-8
 RECENT_HIST_WINDOW = 50
 
 HIST_LEVEL_LAGS = (
@@ -27,16 +28,56 @@ HIST_DIFF_LAGS = list(range(1, 51))
 ONLINE_LAGS = list(range(1, 51))
 ONLINE_WINDOWS = [5, 10, 20, 50]
 
-META_COLS = [
+SUMMARY_STATS = [
+    "mean",
+    "std",
+    "min",
+    "q05",
+    "median",
+    "q95",
+    "max",
+]
+
+NON_FEATURE_COLS = [
     "id",
     "time",
-    "online_step",
     "target",
     "tau_index",
     "tau",
     "has_break",
     "online_length",
 ]
+
+
+def compute_summary_stats(x):
+    x = np.asarray(
+        x,
+        dtype=np.float64,
+    )
+
+    if len(x) == 0:
+        return {
+            stat: np.nan
+            for stat in SUMMARY_STATS
+        }
+
+    q05, median, q95 = np.percentile(
+        x,
+        [5, 50, 95],
+    )
+
+    return {
+        "mean": np.mean(x),
+        "std": np.std(
+            x,
+            ddof=0,
+        ),
+        "min": np.min(x),
+        "q05": q05,
+        "median": median,
+        "q95": q95,
+        "max": np.max(x),
+    }
 
 
 def generate_historical_features(
@@ -65,7 +106,11 @@ def generate_historical_features(
     diff1 = smooth.diff()
     diff2 = diff1.diff()
 
-    features = {}
+    features = {
+        "hist_length": np.float32(
+            len(history)
+        ),
+    }
 
     for lag in HIST_LEVEL_LAGS:
         features[
@@ -93,22 +138,38 @@ def generate_historical_features(
             else np.nan
         )
 
-    recent = history[
+    global_stats = (
+        compute_summary_stats(
+            history
+        )
+    )
+
+    recent_history = history[
         -RECENT_HIST_WINDOW:
     ]
 
-    features[
-        "hist_recent50_mean"
-    ] = np.mean(
-        recent
+    recent_stats = (
+        compute_summary_stats(
+            recent_history
+        )
     )
 
-    features[
-        "hist_recent50_std"
-    ] = np.std(
-        recent,
-        ddof=0,
-    )
+    for stat in SUMMARY_STATS:
+        features[
+            f"hist_global_{stat}"
+        ] = np.float32(
+            global_stats[
+                stat
+            ]
+        )
+
+        features[
+            f"hist_recent50_{stat}"
+        ] = np.float32(
+            recent_stats[
+                stat
+            ]
+        )
 
     return features
 
@@ -128,33 +189,37 @@ def compute_online_rolling_features(
             )
         )
 
-        features[
-            f"online_w{window}_mean"
-        ] = (
-            rolling
-            .mean()
-            .iloc[
-                online_start:
-            ]
-            .to_numpy(
-                dtype=np.float32
-            )
-        )
-
-        features[
-            f"online_w{window}_std"
-        ] = (
-            rolling
-            .std(
+        rolling_stats = {
+            "mean": rolling.mean(),
+            "std": rolling.std(
                 ddof=0
+            ),
+            "min": rolling.min(),
+            "q05": rolling.quantile(
+                0.05
+            ),
+            "median": rolling.median(),
+            "q95": rolling.quantile(
+                0.95
+            ),
+            "max": rolling.max(),
+        }
+
+        for (
+            stat,
+            values,
+        ) in rolling_stats.items():
+            features[
+                f"online_w{window}_{stat}"
+            ] = (
+                values
+                .iloc[
+                    online_start:
+                ]
+                .to_numpy(
+                    dtype=np.float32
+                )
             )
-            .iloc[
-                online_start:
-            ]
-            .to_numpy(
-                dtype=np.float32
-            )
-        )
 
     return features
 
@@ -262,6 +327,74 @@ def generate_online_features(
     )
 
 
+def add_online_history_comparisons(
+    online_features,
+    historical_features,
+):
+    for reference in [
+        "recent50",
+        "global",
+    ]:
+        hist_mean = float(
+            historical_features[
+                f"hist_{reference}_mean"
+            ]
+        )
+
+        hist_std = float(
+            historical_features[
+                f"hist_{reference}_std"
+            ]
+        )
+
+        hist_median = float(
+            historical_features[
+                f"hist_{reference}_median"
+            ]
+        )
+
+        std_denom = max(
+            hist_std,
+            EPS,
+        )
+
+        for window in ONLINE_WINDOWS:
+            online_features[
+                f"online_w{window}_mean_vs_hist_{reference}"
+            ] = (
+                online_features[
+                    f"online_w{window}_mean"
+                ]
+                - hist_mean
+            ).astype(
+                np.float32
+            )
+
+            online_features[
+                f"online_w{window}_std_vs_hist_{reference}"
+            ] = (
+                online_features[
+                    f"online_w{window}_std"
+                ]
+                / std_denom
+            ).astype(
+                np.float32
+            )
+
+            online_features[
+                f"online_w{window}_median_vs_hist_{reference}"
+            ] = (
+                online_features[
+                    f"online_w{window}_median"
+                ]
+                - hist_median
+            ).astype(
+                np.float32
+            )
+
+    return online_features
+
+
 def extract_series_target(
     series_y,
     online_times,
@@ -275,19 +408,17 @@ def extract_series_target(
             "target"
             in series_y.columns
         ):
-            target = (
-                series_y[
-                    "target"
-                ]
-            )
+            target = series_y[
+                "target"
+            ]
 
         elif (
             "y"
             in series_y.columns
         ):
-            target = (
-                series_y["y"]
-            )
+            target = series_y[
+                "y"
+            ]
 
         elif (
             len(
@@ -312,10 +443,8 @@ def extract_series_target(
     else:
         target = series_y
 
-    target = (
-        target.reindex(
-            online_times
-        )
+    target = target.reindex(
+        online_times
     )
 
     if target.isna().any():
@@ -336,9 +465,7 @@ def process_single_series(args):
         ema_span,
     ) = args
 
-    series = (
-        series.sort_index()
-    )
+    series = series.sort_index()
 
     history_df = series.loc[
         series[
@@ -398,6 +525,15 @@ def process_single_series(args):
         )
     )
 
+    online_features = (
+        add_online_history_comparisons(
+            online_features=online_features,
+            historical_features=(
+                historical_features
+            ),
+        )
+    )
+
     targets = (
         extract_series_target(
             series_y=series_y,
@@ -417,23 +553,24 @@ def process_single_series(args):
         raise ValueError(
             f"{series_id}: "
             f"{len(targets)} targets "
-            f"for {n_online} "
-            f"online rows."
+            f"for {n_online} online rows."
         )
 
-    historical_df = pd.DataFrame(
-        {
-            name: np.full(
-                n_online,
-                value,
-                dtype=np.float32,
-            )
-            for (
-                name,
-                value,
-            )
-            in historical_features.items()
-        }
+    historical_feature_df = (
+        pd.DataFrame(
+            {
+                name: np.full(
+                    n_online,
+                    value,
+                    dtype=np.float32,
+                )
+                for (
+                    name,
+                    value,
+                )
+                in historical_features.items()
+            }
+        )
     )
 
     tau_index = int(
@@ -483,7 +620,7 @@ def process_single_series(args):
     return pd.concat(
         [
             metadata,
-            historical_df,
+            historical_feature_df,
             online_features,
         ],
         axis=1,
@@ -672,6 +809,48 @@ def prepare_y_index_dataframe(
     return y_index.sort_index()
 
 
+def write_buffer(
+    buffer,
+    writer,
+    output_path,
+):
+    if not buffer:
+        return (
+            writer,
+            0,
+        )
+
+    chunk = pd.concat(
+        buffer,
+        ignore_index=True,
+    )
+
+    table = (
+        pa.Table.from_pandas(
+            chunk,
+            preserve_index=False,
+        )
+    )
+
+    if writer is None:
+        writer = pq.ParquetWriter(
+            str(
+                output_path
+            ),
+            table.schema,
+            compression="zstd",
+        )
+
+    writer.write_table(
+        table
+    )
+
+    return (
+        writer,
+        len(chunk),
+    )
+
+
 def generate_dataset(
     X,
     y,
@@ -836,82 +1015,44 @@ def generate_dataset(
                 ):
                     continue
 
-                chunk = pd.concat(
-                    buffer,
-                    ignore_index=True,
+                (
+                    writer,
+                    rows_written,
+                ) = write_buffer(
+                    buffer=buffer,
+                    writer=writer,
+                    output_path=(
+                        output_path
+                    ),
                 )
 
-                table = (
-                    pa.Table.from_pandas(
-                        chunk,
-                        preserve_index=False,
-                    )
-                )
-
-                if writer is None:
-                    writer = (
-                        pq.ParquetWriter(
-                            str(
-                                output_path
-                            ),
-                            table.schema,
-                            compression="zstd",
-                        )
-                    )
-
-                writer.write_table(
-                    table
-                )
-
-                total_rows += len(
-                    chunk
+                total_rows += (
+                    rows_written
                 )
 
                 row_groups += 1
 
                 buffer.clear()
 
-                del chunk
-                del table
-
         if buffer:
-            chunk = pd.concat(
-                buffer,
-                ignore_index=True,
+            (
+                writer,
+                rows_written,
+            ) = write_buffer(
+                buffer=buffer,
+                writer=writer,
+                output_path=(
+                    output_path
+                ),
             )
 
-            table = (
-                pa.Table.from_pandas(
-                    chunk,
-                    preserve_index=False,
-                )
-            )
-
-            if writer is None:
-                writer = (
-                    pq.ParquetWriter(
-                        str(
-                            output_path
-                        ),
-                        table.schema,
-                        compression="zstd",
-                    )
-                )
-
-            writer.write_table(
-                table
-            )
-
-            total_rows += len(
-                chunk
+            total_rows += (
+                rows_written
             )
 
             row_groups += 1
 
             buffer.clear()
-
-            del chunk
-            del table
 
     finally:
         if writer is not None:
@@ -1068,7 +1209,7 @@ def main(
     )
 
     click.echo(
-        "Model features: 322"
+        "Model features: 379"
     )
 
     generate_dataset(

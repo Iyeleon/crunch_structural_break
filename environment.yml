@@ -10,6 +10,7 @@ dependencies:
   - matplotlib=3.11.0
   - numpy>=1.22
   - pandas=3.0.5
+  - polars=1.44.2
   - pyarrow=25.0.0
   - python=3.12
   - scikit-learn=1.8.0
