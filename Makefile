@@ -19,7 +19,7 @@ split:
 		--n-splits 5 \
 		--seed 42
 
-EMA_SPAN ?= 5
+MIN_POST_BREAK ?= 5
 NUM_WORKERS ?= 12
 SERIES_PER_PART ?= 50
 
@@ -37,30 +37,26 @@ features:
 		--y-path $(Y_PATH) \
 		--y-index-path $(Y_INDEX_PATH) \
 		--output-path $(OUTPUT_PATH) \
-		--ema-span $(EMA_SPAN) \
 		--num-workers $(NUM_WORKERS) \
 		--series-per-chunk $(SERIES_PER_PART)
 
-train_features_ema5:
+train_features_v1:
 	$(MAKE) features \
 		X_PATH=data/2026_data/X_train.parquet \
 		Y_PATH=data/2026_data/y_train.parquet \
 		Y_INDEX_PATH=data/2026_data/y_train_index.parquet \
-		OUTPUT_PATH=data/final/$@.parquet \
-		EMA_SPAN=5
+		OUTPUT_PATH=data/final/$@.parquet
 
-augment_features_ema5:
+augment_features_v1:
 	$(MAKE) features \
 		X_PATH=data/processed/old_augmented/X_train.parquet \
 		Y_PATH=data/processed/old_augmented/y_train.parquet \
 		Y_INDEX_PATH=data/processed/old_augmented/y_index.parquet \
-		OUTPUT_PATH=data/final/$@.parquet \
-		EMA_SPAN=5
+		OUTPUT_PATH=data/final/$@.parquet
 
-test_features_ema5:
+test_features_v1:
 	$(MAKE) features \
 		X_PATH=data/2026_data/X_test.reduced.parquet \
 		Y_PATH=data/2026_data/y_test.reduced.parquet \
 		Y_INDEX_PATH=data/2026_data/y_test_index.reduced.parquet \
-		OUTPUT_PATH=data/final/$@.parquet \
-		EMA_SPAN=5
+		OUTPUT_PATH=data/final/$@.parquet
