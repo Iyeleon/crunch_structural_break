@@ -40,21 +40,21 @@ features:
 		--num-workers $(NUM_WORKERS) \
 		--series-per-chunk $(SERIES_PER_PART)
 
-train_features_v1:
+train_features_v3:
 	$(MAKE) features \
 		X_PATH=data/2026_data/X_train.parquet \
 		Y_PATH=data/2026_data/y_train.parquet \
 		Y_INDEX_PATH=data/2026_data/y_train_index.parquet \
 		OUTPUT_PATH=data/final/$@.parquet
 
-augment_features_v1:
+augment_features_v3:
 	$(MAKE) features \
 		X_PATH=data/processed/old_augmented/X_train.parquet \
 		Y_PATH=data/processed/old_augmented/y_train.parquet \
 		Y_INDEX_PATH=data/processed/old_augmented/y_index.parquet \
 		OUTPUT_PATH=data/final/$@.parquet
 
-test_features_v1:
+test_features_v3:
 	$(MAKE) features \
 		X_PATH=data/2026_data/X_test.reduced.parquet \
 		Y_PATH=data/2026_data/y_test.reduced.parquet \
